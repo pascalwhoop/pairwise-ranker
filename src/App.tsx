@@ -1,10 +1,11 @@
-import React, { useState, useRef, useMemo } from "react";
+import React, { useState, useRef, useMemo, useEffect } from "react";
 import Papa from "papaparse";
 import { toast } from "sonner";
 import { PairwiseRanker } from "pairwise-ranker";
 import { LoadItemsPanel } from "./components/LoadItemsPanel";
 import { RankingTable } from "./components/RankingTable";
 import { PairwiseCompare } from "./components/PairwiseCompare";
+import { HowItWorksPanel } from "./components/HowItWorksPanel";
 
 interface Item {
     id: number;
@@ -154,11 +155,34 @@ export default function App() {
     const itemA = currentPair ? { id: 0, name: currentPair.itemA } : null;
     const itemB = currentPair ? { id: 1, name: currentPair.itemB } : null;
 
+    // Keyboard event handler
+    useEffect(() => {
+        function handleKeyPress(event: KeyboardEvent) {
+            if (!currentPair || !itemA || !itemB || isRankingComplete || isLoading) return;
+            
+            const key = event.key.toLowerCase();
+            if (key === 'a') {
+                event.preventDefault();
+                handleChoice(itemA.name);
+            } else if (key === 'b') {
+                event.preventDefault();
+                handleChoice(itemB.name);
+            }
+        }
+
+        document.addEventListener('keydown', handleKeyPress);
+        return () => {
+            document.removeEventListener('keydown', handleKeyPress);
+        };
+    }, [currentPair, itemA, itemB, isRankingComplete, isLoading]);
+
     return (
         <div className="container mx-auto p-4 md:p-8 space-y-6">
             <header className="text-center">
                 <h1 className="text-3xl font-bold tracking-tight">Pairwise Ranker</h1>
-                <p className="text-muted-foreground">Rank your items by comparing them head-to-head.</p>
+                <p className="text-muted-foreground">
+                    Intelligent ranking through simple A vs B comparisons using advanced Elo algorithms
+                </p>
             </header>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-1 space-y-6">
@@ -172,6 +196,7 @@ export default function App() {
                         onReset={resetRanking}
                         fileInputRef={fileInputRef}
                     />
+                    <HowItWorksPanel />
                     {items.length > 0 && (
                         <RankingTable
                             rankedItems={items}
