@@ -6,8 +6,9 @@ import ReactMarkdown from "react-markdown";
 interface Item {
   id: number;
   name: string;
-  rating: number;
-  wins: number;
+  score: number;
+  rank: number;
+  confidence: number;
 }
 
 interface RankingTableProps {
@@ -27,7 +28,7 @@ export function RankingTable({ rankedItems, onExport }: RankingTableProps) {
             </button>
           )}
         </div>
-        <CardDescription>Current ranking based on Elo ratings. Updates live.</CardDescription>
+        <CardDescription>Current ranking based on pairwise comparisons. Updates live.</CardDescription>
       </CardHeader>
       <CardContent>
         {rankedItems.length > 0 ? (
@@ -36,21 +37,21 @@ export function RankingTable({ rankedItems, onExport }: RankingTableProps) {
               <TableRow>
                 <TableHead className="w-[50px]">Rank</TableHead>
                 <TableHead>Name</TableHead>
-                <TableHead className="text-right">Rating</TableHead>
-                <TableHead className="text-right">Wins</TableHead>
+                <TableHead className="text-right">Score</TableHead>
+                <TableHead className="text-right">Confidence</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rankedItems.map((item, index) => (
+              {rankedItems.map((item) => (
                 <TableRow key={item.id}>
-                  <TableCell className="font-medium">{index + 1}</TableCell>
+                  <TableCell className="font-medium">{item.rank}</TableCell>
                   <TableCell>
                     <div className="max-w-xs overflow-auto break-words">
                       <ReactMarkdown>{item.name}</ReactMarkdown>
                     </div>
                   </TableCell>
-                  <TableCell className="text-right">{Math.round(item.rating)}</TableCell>
-                  <TableCell className="text-right">{item.wins}</TableCell>
+                  <TableCell className="text-right">{item.score.toFixed(3)}</TableCell>
+                  <TableCell className="text-right">{(item.confidence * 100).toFixed(1)}%</TableCell>
                 </TableRow>
               ))}
             </TableBody>

@@ -6,8 +6,6 @@ import ReactMarkdown from "react-markdown";
 interface Item {
   id: number;
   name: string;
-  rating: number;
-  wins: number;
 }
 
 interface PairwiseCompareProps {

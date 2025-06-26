@@ -1,61 +1,76 @@
 import React, { useState, useRef, useMemo } from "react";
 import Papa from "papaparse";
 import { toast } from "sonner";
-import { Download } from "lucide-react";
-import EloRank from "elo-rank";
-import { generatePairs, pairKey } from "./lib/utils";
+import { PairwiseRanker } from "pairwise-ranker";
 import { LoadItemsPanel } from "./components/LoadItemsPanel";
 import { RankingTable } from "./components/RankingTable";
 import { PairwiseCompare } from "./components/PairwiseCompare";
 
-const elo = new EloRank(32);
-
 interface Item {
     id: number;
     name: string;
-    rating: number;
-    wins: number;
+    score: number;
+    rank: number;
+    confidence: number;
 }
 
-type Pair = [number, number];
-
 export default function App() {
-    const [items, setItems] = useState<Item[]>([]);
+    const [itemNames, setItemNames] = useState<string[]>([]);
     const [pasteContent, setPasteContent] = useState<string>("");
-    const [comparedPairs, setComparedPairs] = useState<Set<string>>(new Set());
-    const [remainingPairs, setRemainingPairs] = useState<Pair[]>([]);
-    const [isRankingComplete, setIsRankingComplete] = useState(false);
+    const [ranker, setRanker] = useState<PairwiseRanker | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [updateCounter, setUpdateCounter] = useState(0);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Derived
-    const allPairs = useMemo(() => generatePairs(items.map(i => i.id)), [items]);
-    const progress = allPairs.length ? Math.round((comparedPairs.size / allPairs.length) * 100) : 0;
-    const currentPair = remainingPairs[0] || null;
-    const rankedItems = useMemo(() => [...items].sort((a, b) => b.rating - a.rating), [items]);
+    // Derived state from the ranker
+    const currentPair = useMemo(() => {
+        if (!ranker) return null;
+        const nextMatch = ranker.getNextMatch();
+        return nextMatch;
+    }, [ranker, updateCounter]);
+
+    const items = useMemo(() => {
+        if (!ranker) return [];
+        const rankings = ranker.getRankings();
+        return rankings.map((ranking, index): Item => ({
+            id: index,
+            name: ranking.item,
+            score: ranking.score,
+            rank: ranking.rank,
+            confidence: ranking.confidence,
+        }));
+    }, [ranker, updateCounter]);
+
+    const isRankingComplete = useMemo(() => {
+        return ranker ? ranker.isSessionComplete() : false;
+    }, [ranker, updateCounter]);
+
+    const progress = useMemo(() => {
+        if (!ranker) return 0;
+        // Calculate progress based on comparisons made vs total possible pairs
+        const totalPairs = itemNames.length * (itemNames.length - 1) / 2;
+        const nextMatches = ranker.getNextMatches(totalPairs);
+        const completedPairs = totalPairs - nextMatches.length;
+        return totalPairs > 0 ? Math.round((completedPairs / totalPairs) * 100) : 0;
+    }, [ranker, itemNames.length, updateCounter]);
 
     // Handlers
     function loadItems(names: string[]) {
         if (names.length < 2) {
             toast.warning("Please provide at least 2 items to rank.");
-            setItems([]);
-            setComparedPairs(new Set());
-            setRemainingPairs([]);
-            setIsRankingComplete(true);
+            setItemNames([]);
+            setRanker(null);
             return;
         }
-        const newItems = names.map((name, index) => ({
-            id: index,
-            name: name,
-            rating: 1200,
-            wins: 0,
-        }));
-        setItems(newItems);
-        setComparedPairs(new Set());
-        const ids = newItems.map(i => i.id);
-        setRemainingPairs(generatePairs(ids));
-        setIsRankingComplete(false);
-        toast.success(`${newItems.length} items loaded successfully!`);
+        try {
+            const newRanker = new PairwiseRanker(names);
+            setRanker(newRanker);
+            setItemNames(names);
+            toast.success(`${names.length} items loaded successfully!`);
+        } catch (error) {
+            console.error("Error creating ranker:", error);
+            toast.error(`Error creating ranker: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
     }
 
     function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -93,52 +108,34 @@ export default function App() {
         setIsLoading(false);
     }
 
-    function handleChoice(winnerId: number) {
-        if (!currentPair) return;
-        const [idA, idB] = currentPair;
-        const loserId = (winnerId === idA) ? idB : idA;
-        const winnerItem = items.find(item => item.id === winnerId);
-        const loserItem = items.find(item => item.id === loserId);
-        if (!winnerItem || !loserItem) return;
-        const expectedWinner = elo.getExpected(winnerItem.rating, loserItem.rating);
-        const expectedLoser = elo.getExpected(loserItem.rating, winnerItem.rating);
-        const newWinnerRating = elo.updateRating(expectedWinner, 1, winnerItem.rating);
-        const newLoserRating = elo.updateRating(expectedLoser, 0, loserItem.rating);
-        setItems(prevItems => prevItems.map(item => {
-            if (item.id === winnerId) {
-                return { ...item, rating: newWinnerRating, wins: item.wins + 1 };
-            } else if (item.id === loserId) {
-                return { ...item, rating: newLoserRating };
-            }
-            return item;
-        }));
-        setComparedPairs(prev => {
-            const next = new Set(prev);
-            next.add(pairKey(currentPair));
-            return next;
-        });
-        setRemainingPairs(prev => {
-            const next = prev.slice(1);
-            if (next.length === 0) setIsRankingComplete(true);
-            return next;
-        });
+    function handleChoice(winnerName: string) {
+        if (!ranker || !currentPair) return;
+        
+        const loserName = currentPair.itemA === winnerName ? currentPair.itemB : currentPair.itemA;
+        
+        try {
+            ranker.submitComparison(winnerName, loserName);
+            // Force re-render by incrementing the update counter
+            setUpdateCounter(prev => prev + 1);
+        } catch (error) {
+            console.error("Error submitting comparison:", error);
+            toast.error(`Error submitting comparison: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
     }
 
     function resetRanking() {
-        setItems([]);
+        setItemNames([]);
         setPasteContent("");
-        setComparedPairs(new Set());
-        setRemainingPairs([]);
-        setIsRankingComplete(false);
+        setRanker(null);
         setIsLoading(false);
         if (fileInputRef.current) fileInputRef.current.value = "";
         toast.info("Ranking reset.");
     }
 
     function downloadCSV(filename: string, data: Item[]) {
-        const sortedData = [...data].sort((a, b) => b.rating - a.rating);
-        const csvContent = "Rank,Name,Elo Rating,Wins\n" +
-            sortedData.map((item, index) => `${index + 1},"${item.name.replace(/"/g, '""')}",${item.rating},${item.wins}`).join("\n");
+        const sortedData = [...data].sort((a, b) => a.rank - b.rank);
+        const csvContent = "Rank,Name,Score,Confidence\n" +
+            sortedData.map((item) => `${item.rank},"${item.name.replace(/"/g, '""')}",${item.score.toFixed(4)},${item.confidence.toFixed(4)}`).join("\n");
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement("a");
         if (link.download !== undefined) {
@@ -154,9 +151,8 @@ export default function App() {
         }
     }
 
-    const getItemById = (id: number): Item | undefined => items.find(item => item.id === id);
-    const itemA = currentPair ? getItemById(currentPair[0]) ?? null : null;
-    const itemB = currentPair ? getItemById(currentPair[1]) ?? null : null;
+    const itemA = currentPair ? { id: 0, name: currentPair.itemA } : null;
+    const itemB = currentPair ? { id: 1, name: currentPair.itemB } : null;
 
     return (
         <div className="container mx-auto p-4 md:p-8 space-y-6">
@@ -168,7 +164,7 @@ export default function App() {
                 <div className="lg:col-span-1 space-y-6">
                     <LoadItemsPanel
                         isLoading={isLoading}
-                        itemsLoaded={items.length > 0}
+                        itemsLoaded={itemNames.length > 0}
                         onFileChange={handleFileChange}
                         onPaste={handlePaste}
                         pasteContent={pasteContent}
@@ -178,21 +174,21 @@ export default function App() {
                     />
                     {items.length > 0 && (
                         <RankingTable
-                            rankedItems={rankedItems}
-                            onExport={() => downloadCSV('ranking.csv', rankedItems)}
+                            rankedItems={items}
+                            onExport={() => downloadCSV('ranking.csv', items)}
                         />
                     )}
                 </div>
                 <div className="lg:col-span-2">
                     <div className="sticky top-8">
                         <div className="mb-4">
-                            {items.length >= 2 && (
+                            {itemNames.length >= 2 && (
                                 <div className="text-muted-foreground mb-2">
                                     Choose the better item (A or B). Use buttons or 'A'/'B' keys.<br />
-                                    Progress: {comparedPairs.size} / {allPairs.length} pairs ({progress}%)
+                                    Progress: {progress}% complete {isRankingComplete && "(Complete!)"}
                                 </div>
                             )}
-                            {items.length < 2 && (
+                            {itemNames.length < 2 && (
                                 <div className="text-muted-foreground mb-2">
                                     Load at least two items to start comparing.
                                 </div>
@@ -202,20 +198,25 @@ export default function App() {
                             <PairwiseCompare
                                 itemA={itemA}
                                 itemB={itemB}
-                                onChoose={handleChoice}
+                                onChoose={(id) => {
+                                    if (itemA && itemB) {
+                                        const winnerName = id === itemA.id ? itemA.name : itemB.name;
+                                        handleChoice(winnerName);
+                                    }
+                                }}
                                 isRankingComplete={isRankingComplete}
                                 isLoading={isLoading}
                             />
-                            {!isLoading && items.length >= 2 && isRankingComplete && (
+                            {!isLoading && itemNames.length >= 2 && isRankingComplete && (
                                 <div className="text-center space-y-4">
                                     <p className="text-xl font-semibold text-green-600">Ranking Complete!</p>
-                                    <p>All pairs have been compared.</p>
+                                    <p>All necessary comparisons have been made with sufficient confidence.</p>
                                     <button className="border rounded px-4 py-2" onClick={resetRanking}>
                                         Start New Ranking
                                     </button>
                                 </div>
                             )}
-                            {!isLoading && items.length < 2 && (
+                            {!isLoading && itemNames.length < 2 && (
                                 <p className="text-muted-foreground">Load items using the panel on the left.</p>
                             )}
                         </div>
