@@ -19,14 +19,18 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { ArrowUpDown, Download } from "lucide-react";
+import EloRank from "elo-rank";
+import ReactMarkdown from "react-markdown";
 
+// Initialize Elo with K-factor of 32 (standard value)
+const elo = new EloRank(32);
 
 // --- Data Structures ---
 interface Item {
     id: number;
     name: string;
-    wins: number; // Simple win count for ranking
-    // comparisonsMade: number; // Could add for more complex logic
+    rating: number; // Elo rating instead of wins
+    wins: number; // Keep track of wins for reference
 }
 
 type Pair = [number, number]; // Represents [itemIdA, itemIdB]
@@ -49,9 +53,9 @@ function generatePairs(itemIds: number[]): Pair[] {
 }
 
 function downloadCSV(filename: string, data: Item[]) {
-    const sortedData = [...data].sort((a, b) => b.wins - a.wins);
-    const csvContent = "Rank,Name,Wins\n" +
-                       sortedData.map((item, index) => `${index + 1},"${item.name.replace(/"/g, '""')}",${item.wins}`).join("\n");
+    const sortedData = [...data].sort((a, b) => b.rating - a.rating);
+    const csvContent = "Rank,Name,Elo Rating,Wins\n" +
+                       sortedData.map((item, index) => `${index + 1},"${item.name.replace(/"/g, '""')}",${item.rating},${item.wins}`).join("\n");
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement("a");
     if (link.download !== undefined) { // feature detection
@@ -81,6 +85,7 @@ export default function HomePage() {
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [isRankingComplete, setIsRankingComplete] = useState<boolean>(false);
+    const [completedPairs, setCompletedPairs] = useState<number>(0);
 
     // --- Input Handling ---
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -132,6 +137,7 @@ export default function HomePage() {
         const newItems = names.map((name, index) => ({
             id: index, // Simple ID generation
             name: name,
+            rating: 1200, // Starting Elo rating (standard)
             wins: 0,
         }));
         setItems(newItems);
@@ -141,7 +147,7 @@ export default function HomePage() {
     // --- Ranking Logic ---
     useEffect(() => {
         // Update ranking whenever items change
-        const sorted = [...items].sort((a, b) => b.wins - a.wins);
+        const sorted = [...items].sort((a, b) => b.rating - a.rating);
         setRankedItems(sorted);
 
         // Initialize or update pairs when items are loaded/changed
@@ -152,11 +158,13 @@ export default function HomePage() {
             setRemainingPairs(newPairs); // Start with all pairs
             setCurrentPair(newPairs[0] || null); // Set the first pair
             setIsRankingComplete(false);
+            setCompletedPairs(0); // Reset completed pairs counter
         } else {
             setAllPossiblePairs([]);
             setRemainingPairs([]);
             setCurrentPair(null);
             setIsRankingComplete(true);
+            setCompletedPairs(0);
         }
     }, [items]); // Dependency: items array
 
@@ -166,22 +174,43 @@ export default function HomePage() {
         const [idA, idB] = currentPair;
         const loserId = (winnerId === idA) ? idB : idA; // Determine loser
 
-         setItems(prevItems => prevItems.map(item =>
-            item.id === winnerId ? { ...item, wins: item.wins + 1 } : item
-         ));
+        // Find the current items
+        const winnerItem = items.find(item => item.id === winnerId);
+        const loserItem = items.find(item => item.id === loserId);
+
+        if (!winnerItem || !loserItem) return;
+
+        // Calculate expected scores
+        const expectedWinner = elo.getExpected(winnerItem.rating, loserItem.rating);
+        const expectedLoser = elo.getExpected(loserItem.rating, winnerItem.rating);
+
+        // Update ratings
+        const newWinnerRating = elo.updateRating(expectedWinner, 1, winnerItem.rating);
+        const newLoserRating = elo.updateRating(expectedLoser, 0, loserItem.rating);
+
+        // Update items
+        setItems(prevItems => prevItems.map(item => {
+            if (item.id === winnerId) {
+                return { ...item, rating: newWinnerRating, wins: item.wins + 1 };
+            } else if (item.id === loserId) {
+                return { ...item, rating: newLoserRating };
+            }
+            return item;
+        }));
 
         // Move to the next pair
-         const nextRemainingPairs = remainingPairs.slice(1);
-         setRemainingPairs(nextRemainingPairs);
+        const nextRemainingPairs = remainingPairs.slice(1);
+        setRemainingPairs(nextRemainingPairs);
+        setCompletedPairs(prev => prev + 1);
 
-         if (nextRemainingPairs.length === 0) {
+        if (nextRemainingPairs.length === 0) {
             setCurrentPair(null);
             setIsRankingComplete(true);
             toast.success("Ranking complete! All pairs compared.");
-         } else {
+        } else {
             setCurrentPair(nextRemainingPairs[0]);
-         }
-    }, [currentPair, remainingPairs]); // Dependencies
+        }
+    }, [currentPair, remainingPairs, items]); // Dependencies
 
 
     const resetRanking = () => {
@@ -193,6 +222,7 @@ export default function HomePage() {
         setRankedItems([]);
         setIsRankingComplete(false);
         setIsLoading(false);
+        setCompletedPairs(0);
          if (fileInputRef.current) {
              fileInputRef.current.value = ""; // Reset file input
          }
@@ -229,7 +259,6 @@ export default function HomePage() {
 
     // --- Calculate Progress ---
     const totalPairs = allPossiblePairs.length;
-    const completedPairs = totalPairs - remainingPairs.length;
     const progressPercent = totalPairs > 0 ? Math.round((completedPairs / totalPairs) * 100) : 0;
 
 
@@ -305,7 +334,7 @@ Item 3..."
                                          <Download className="h-4 w-4 mr-2" /> Export
                                      </Button>
                                 </div>
-                                <CardDescription>Current ranking based on wins. Updates live.</CardDescription>
+                                <CardDescription>Current ranking based on Elo ratings. Updates live.</CardDescription>
                             </CardHeader>
                             <CardContent>
                                 {rankedItems.length > 0 ? (
@@ -314,6 +343,7 @@ Item 3..."
                                             <TableRow>
                                                 <TableHead className="w-[50px]">Rank</TableHead>
                                                 <TableHead>Name</TableHead>
+                                                <TableHead className="text-right">Rating</TableHead>
                                                 <TableHead className="text-right">Wins</TableHead>
                                             </TableRow>
                                         </TableHeader>
@@ -321,7 +351,12 @@ Item 3..."
                                             {rankedItems.map((item, index) => (
                                                 <TableRow key={item.id}>
                                                     <TableCell className="font-medium">{index + 1}</TableCell>
-                                                    <TableCell>{item.name}</TableCell>
+                                                    <TableCell>
+                                                        <div className="max-w-xs overflow-auto break-words">
+                                                            <ReactMarkdown>{item.name}</ReactMarkdown>
+                                                        </div>
+                                                    </TableCell>
+                                                    <TableCell className="text-right">{Math.round(item.rating)}</TableCell>
                                                     <TableCell className="text-right">{item.wins}</TableCell>
                                                 </TableRow>
                                             ))}
@@ -364,7 +399,9 @@ Item 3..."
                                          aria-label={`Choose ${itemA.name} (Option A)`}
                                      >
                                          <span className="text-sm font-semibold text-muted-foreground mb-2">[A]</span>
-                                         <span>{itemA.name}</span>
+                                         <span className="max-w-xs overflow-auto break-words">
+                                             <ReactMarkdown>{itemA.name}</ReactMarkdown>
+                                         </span>
                                      </Button>
 
                                      {/* Item B Button */}
@@ -375,7 +412,9 @@ Item 3..."
                                          aria-label={`Choose ${itemB.name} (Option B)`}
                                      >
                                          <span className="text-sm font-semibold text-muted-foreground mb-2">[B]</span>
-                                         <span>{itemB.name}</span>
+                                         <span className="max-w-xs overflow-auto break-words">
+                                             <ReactMarkdown>{itemB.name}</ReactMarkdown>
+                                         </span>
                                      </Button>
                                  </div>
                              ) : !isLoading && items.length >= 2 && isRankingComplete ? (
